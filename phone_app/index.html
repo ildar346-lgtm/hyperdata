@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HyperData">
+<meta name="theme-color" content="#0b0e14">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>HyperData</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="hd.js"></script>
+<style>
+  :root { --bg:#0b0e14; --panel:#121620; --line:#232a38; --fg:#f1f5f9; --dim:#94a3b8; --up:#22e07a; --down:#ff4d5e; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px -apple-system, sans-serif;
+               overscroll-behavior:none; -webkit-user-select:none; user-select:none; }
+  #bar { position:fixed; top:0; left:0; right:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line);
+         padding:calc(env(safe-area-inset-top) + 6px) 8px 6px; }
+  #row1 { display:flex; gap:8px; align-items:center; }
+  #coin { width:96px; background:#0f131c; color:var(--fg); border:1px solid #2f3747; border-radius:10px; padding:7px 9px;
+          font:16px ui-monospace, Menlo, monospace; text-transform:uppercase; }
+  #px { font:700 18px ui-monospace, Menlo, monospace; }
+  #st { margin-left:auto; color:var(--dim); font-size:11px; text-align:right; }
+  #tfs { display:flex; gap:5px; margin-top:6px; overflow-x:auto; }
+  .tf { flex:none; background:#1c2230; color:var(--fg); border:1px solid #2f3747; border-radius:8px; padding:5px 10px; font:13px inherit; }
+  .tf.on { background:#2563eb; border-color:#2563eb; }
+  #info { position:fixed; left:0; right:0; z-index:4; padding:4px 8px; font-size:12px; line-height:1.35;
+          background:rgba(11,14,20,.9); border-bottom:1px solid var(--line); }
+  #chart { position:fixed; left:0; right:0; }
+  #zc { position:absolute; inset:0; pointer-events:none; z-index:3; }
+  #tip { display:none; position:absolute; z-index:6; width:230px; pointer-events:none; padding:7px 9px; font-size:12px;
+         line-height:1.4; background:rgba(18,22,32,.96); border:1px solid #2f3747; border-radius:9px; }
+  #tabs { position:fixed; left:0; right:0; bottom:0; z-index:5; display:flex; background:var(--panel);
+          border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+  #tabs button { flex:1; background:none; border:0; color:var(--dim); font:12px -apple-system, sans-serif; padding:7px 0 9px; }
+  #tabs button span { display:block; font-size:19px; }
+  #tabs button.on { color:var(--fg); }
+  .page { position:fixed; left:0; right:0; overflow:auto; display:none; padding:10px; box-sizing:border-box; }
+  .m { color:var(--dim); }
+  .ctl { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .ctl button { background:#1c2230; color:var(--fg); border:1px solid #2f3747; border-radius:8px; padding:6px 10px; font:13px inherit; }
+  .ctl button.on { background:#2563eb; border-color:#2563eb; }
+  .head { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 10px; margin-bottom:8px;
+          font:12px/1.5 ui-monospace, Menlo, monospace; }
+  .mrow { display:flex; align-items:center; gap:6px; font:12px ui-monospace, Menlo, monospace; height:20px; }
+  .mrow .p { width:76px; text-align:right; color:#cbd5e1; flex:none; }
+  .mrow .bar { flex:1; height:12px; position:relative; }
+  .mrow .bar i { position:absolute; left:0; top:0; bottom:0; border-radius:2px; }
+  .mrow .u { width:66px; text-align:right; flex:none; }
+  .mrow .d { width:52px; text-align:right; color:var(--dim); flex:none; }
+  .mrow.cur { background:rgba(255,210,63,.12); border-radius:4px; }
+  .mrow.cur .p { color:#ffd23f; font-weight:700; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 10px; margin-bottom:6px; }
+  .card .t { display:flex; align-items:center; gap:8px; font-weight:700; }
+  .chip { font-size:11px; padding:2px 7px; border-radius:6px; background:#1c2230; color:var(--dim); font-weight:600; }
+  .chip.long { background:rgba(34,224,122,.18); color:#22e07a; } .chip.short { background:rgba(255,77,94,.18); color:#ff4d5e; }
+  .card .n { font:12px ui-monospace, Menlo, monospace; color:#cbd5e1; margin-top:4px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div id="row1"><input id="coin" autocapitalize="characters" autocomplete="off" spellcheck="false" value="BTC">
+    <span id="px">…</span><span id="st"></span></div>
+  <div id="tfs"></div>
+</div>
+<div id="info"></div>
+<div id="chart"><canvas id="zc"></canvas><div id="tip"></div></div>
+<div class="page" id="p-map">
+  <div class="ctl" id="mwin"></div>
+  <div class="ctl"><button id="mup">▲</button><button id="mdn">▼</button><button id="mzero">⊙ к цене</button>
+    <span class="m" id="mpan" style="align-self:center"></span></div>
+  <div class="head" id="mhead">…</div><div id="mrows"></div>
+  <p class="m">Оценка по Binance, Bybit, OKX (их открытый интерес и свечи 7 дней). Не совет.</p>
+</div>
+<div class="page" id="p-scr">
+  <div class="ctl"><button id="sgo">🔎 обновить</button><span class="m" id="sst" style="align-self:center"></span></div>
+  <div id="slist"><p class="m">Нажмите «обновить»: 40 самых торгуемых монет Binance, ~20 с.</p></div>
+  <p class="m">Сквиз ↑: фандинг &lt; 0, ОИ растёт, покупки, цена стоит. Зеркально ↓. Обзор, не сигнал.</p>
+</div>
+<div id="tabs">
+  <button data-p="chart" class="on"><span>📈</span>График</button>
+  <button data-p="map"><span>🗺</span>Карта</button>
+  <button data-p="scr"><span>🔎</span>Скринер</button>
+</div>
+<script>
+// the phone's chart 20 on its own: HD.load asks the exchanges and counts our scheme; this page draws it
+const $ = (id) => document.getElementById(id);
+const TFS = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"];
+let coin = "BTC", tf = "15m", D = null, busy = false;
+try { coin = localStorage.getItem("hdp_coin") || "BTC"; tf = localStorage.getItem("hdp_tf") || "15m"; } catch (e) {}
+$("coin").value = coin;
+$("tfs").innerHTML = TFS.map((t) => `<button class="tf" data-tf="${t}">${t}</button>`).join("");
+const fmt = (v) => { const a = Math.abs(v); return a >= 1e9 ? (v / 1e9).toFixed(2) + "B" : a >= 1e6 ? (v / 1e6).toFixed(1) + "M"
+  : a >= 1e3 ? (v / 1e3).toFixed(0) + "K" : v.toFixed(0); };
+const fp = (p) => p >= 1000 ? p.toFixed(1) : p >= 1 ? p.toFixed(3) : p.toPrecision(4);
+
+function layout() {
+  const top = $("bar").offsetHeight, info = $("info").offsetHeight, bot = $("tabs").offsetHeight;
+  $("info").style.top = top + "px";
+  for (const el of [$("chart"), $("p-map"), $("p-scr")]) { el.style.top = (top + (el.id === "chart" ? info : 0)) + "px"; el.style.bottom = bot + "px"; }
+  chart.applyOptions({ width: $("chart").clientWidth, height: $("chart").clientHeight });
+  draw();
+}
+const chart = LightweightCharts.createChart($("chart"), {
+  layout: { background: { color: "#0b0e14" }, textColor: "#cbd5e1", fontSize: 11 },
+  grid: { vertLines: { color: "#161b26" }, horzLines: { color: "#161b26" } },
+  timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 10 },
+  rightPriceScale: { borderColor: "#232a38" }, crosshair: { mode: 0 } });
+const series = chart.addCandlestickSeries({ upColor: "#22e07a", downColor: "#ff4d5e", borderVisible: false,
+  wickUpColor: "#22e07a", wickDownColor: "#ff4d5e" });
+const vol = chart.addHistogramSeries({ priceScaleId: "v", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
+chart.priceScale("v").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.05, bottom: 0.17 } });
+chart.timeScale().subscribeVisibleLogicalRangeChange(draw);
+new ResizeObserver(layout).observe(document.body);
+
+function setData(d, keepView) {
+  series.setData(d.candles.map((c) => ({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] })));
+  vol.setData(d.candles.map((c) => ({ time: c[0], value: c[5], color: c[4] >= c[1] ? "rgba(34,224,122,.35)" : "rgba(255,77,94,.35)" })));
+  if (!keepView) { const n = d.candles.length; chart.timeScale().setVisibleLogicalRange({ from: n - 120, to: n + 12 }); }
+}
+function infoLine(d) {
+  const tr = d.trend, side = !tr ? "—" : tr.side === "bull" ? '<b style="color:#22e07a">БЫЧИЙ ↑</b>'
+    : tr.side === "bear" ? '<b style="color:#ff4d5e">МЕДВЕЖИЙ ↓</b>' : '<b style="color:#94a3b8">боковик</b>';
+  let s = `день ${tr ? (tr.ch >= 0 ? "+" : "") + tr.ch.toFixed(2) + "%" : ""} ${side} · свеча 15m ${d.move.toFixed(2)}%`;
+  if (d.star) s += ` · ★ ${fp(d.star.price)} (${((d.star.price / d.price - 1) * 100).toFixed(1)}%)`;
+  for (const p of d.plans) s += `<br><b style="color:${p.side === "long" ? "#22e07a" : "#ff4d5e"}">${p.side === "long" ? "ЛОНГ" : "ШОРТ"}</b>`
+    + ` цель ${fp(p.target)} · стоп ${fp(p.stop)} (${p.by}) · ${p.rr.toFixed(1)}:1 ${p.ok ? "" : '<span style="color:#ff4d5e">— хуже 1:1, не входить</span>'}`;
+  if (!d.plans.length) s += '<br><span class="m">цели «к объёму» в досягаемости нет</span>';
+  s += `<br><span class="m">ликвидации: ${d.venues.join(", ")} (оценка) · не совет</span>`;
+  $("info").innerHTML = s; layout();
+}
+
+// ── the layers on one canvas over the candles ──
+function draw() {
+  const cv = $("zc"), box = $("chart"), dpr = window.devicePixelRatio || 1, w = box.clientWidth, h = box.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + "px"; cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  if (!D) return;
+  const right = w - (chart.priceScale("right").width() || 55), Y = (p) => series.priceToCoordinate(p);
+  const X = (t) => chart.timeScale().timeToCoordinate(t);
+  // the liquidation money: stripes after the last candle through the price, dim, the biggest bright
+  const rows = HD.rows(D.levels, D.price, 0.15, 15), mx = Math.max(1, ...rows.map((r) => r.long + r.short));
+  const big = rows.reduce((a, r) => (!a || r.long + r.short > a.long + a.short ? r : a), null), cs = D.candles;
+  for (const r of rows) {
+    const y = Y(r.price); if (y == null || y < 0 || y > h) continue;
+    let x0 = 0;
+    for (let i = cs.length - 1; i >= 0; i--) if (cs[i][3] <= r.price && cs[i][2] >= r.price) { const x = X(cs[i][0]); x0 = x == null ? 0 : x + 4; break; }
+    if (x0 >= right - 6) continue;
+    const up = r.price > D.price, rgb = up ? "34,224,122" : "255,77,94";
+    const al = r === big ? 0.6 : 0.02 + 0.2 * Math.pow((r.long + r.short) / mx, 1.5);
+    const gr = g.createLinearGradient(0, y - 5, 0, y + 5);
+    gr.addColorStop(0, `rgba(${rgb},0)`); gr.addColorStop(0.5, `rgba(${rgb},${al.toFixed(3)})`); gr.addColorStop(1, `rgba(${rgb},0)`);
+    g.fillStyle = gr; g.fillRect(x0, y - 5, right - x0, 10);
+  }
+  // zones ×3+ and order blocks
+  g.font = "600 10px -apple-system, sans-serif"; g.textBaseline = "bottom";
+  for (const z of D.zones.filter((z) => z.touches >= 3)) {
+    const y1 = Y(z.hi), y0 = Y(z.lo); if (y0 == null || y1 == null) continue;
+    const col = z.kind === "сопр" ? "244,114,182" : "45,212,191", x0 = Math.max(0, X(z.t0) ?? 0), top = Math.min(y0, y1);
+    g.fillStyle = `rgba(${col},.12)`; g.fillRect(x0, top, right - x0, Math.max(2, Math.abs(y0 - y1)));
+    g.fillStyle = `rgb(${col})`; g.fillText(`${z.kind === "сопр" ? "СОПРОТИВЛЕНИЕ" : "ПОДДЕРЖКА"} ×${z.touches}`, x0 + 4, top - 1);
+  }
+  for (const b of D.blocks.slice(0, 4)) {
+    const y1 = Y(b.hi), y0 = Y(b.lo); if (y0 == null || y1 == null) continue;
+    const col = b.up ? "34,197,94" : "239,68,68", x0 = Math.max(0, X(b.t) ?? 0), top = Math.min(y0, y1), ht = Math.max(2, Math.abs(y0 - y1));
+    g.fillStyle = `rgba(${col},.11)`; g.fillRect(x0, top, right - x0, ht);
+    g.strokeStyle = `rgba(${col},.8)`; g.setLineDash([3, 3]); g.strokeRect(x0, top, right - x0, ht); g.setLineDash([]);
+    g.fillStyle = `rgb(${col})`; g.fillText(`ОБ ${b.up ? "↑" : "↓"} 1h`, x0 + 4, top + 12);
+  }
+  // the plan: the target at the money, the stop
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (const p of D.plans) {
+    const col = p.side === "long" ? "#22e07a" : "#ff4d5e";
+    for (const [price, txt, dash] of [[p.target, `${p.side === "long" ? "↑" : "↓"} цель ${fp(p.target)} · ${p.rr.toFixed(1)}:1`, [8, 4]],
+                                      [p.stop, `стоп ${p.by}`, [2, 3]]]) {
+      const y = Y(price); if (y == null) continue;
+      g.strokeStyle = dash[0] === 2 ? "#f59e0b" : col; g.lineWidth = 1.5; g.setLineDash(dash);
+      g.beginPath(); g.moveTo(right * 0.5, y); g.lineTo(right - 2, y); g.stroke(); g.setLineDash([]);
+      const tw = g.measureText(txt).width; g.fillStyle = "rgba(11,14,20,.8)"; g.fillRect(right - 8 - tw, y - 8, tw + 6, 16);
+      g.fillStyle = dash[0] === 2 ? "#f59e0b" : col; g.fillText(txt, right - 5, y);
+    }
+  }
+  if (D.star) { const y = Y(D.star.price); if (y != null && y > 0 && y < h) { g.fillStyle = "#ffd23f"; g.font = "700 14px -apple-system";
+    g.fillText("★", right - 4, y); } }
+  g.textAlign = "left"; g.textBaseline = "bottom";
+}
+
+// ── 🗺 the liquidation map (the panels' first map): rows of money around the price, ★ the biggest, ▲ ▼ the nearest big
+let mWin = 8, mPan = 0;
+const WINS = [2, 4, 8, 15];
+$("mwin").innerHTML = WINS.map((w) => `<button data-w="${w}">±${w}%</button>`).join("");
+document.querySelectorAll("#mwin button").forEach((b) => b.onclick = () => { mWin = +b.dataset.w; mPan = 0; drawMap(); });
+$("mup").onclick = () => { mPan += mWin / 4; drawMap(); };
+$("mdn").onclick = () => { mPan -= mWin / 4; drawMap(); };
+$("mzero").onclick = () => { mPan = 0; drawMap(); };
+function drawMap() {
+  document.querySelectorAll("#mwin button").forEach((b) => b.classList.toggle("on", +b.dataset.w === mWin));
+  $("mpan").textContent = mPan ? `сдвиг ${mPan > 0 ? "+" : ""}${mPan}%` : "";
+  if (!D) return;
+  const N = 32, center = D.price * (1 + mPan / 100), lo = center * (1 - mWin / 100), step = center * 2 * mWin / 100 / N;
+  const rows = Array.from({ length: N }, (_, k) => ({ price: lo + (k + 0.5) * step, long: 0, short: 0 }));
+  let tl = 0, ts = 0;
+  for (const l of D.levels) {
+    const k = Math.floor((l.price - lo) / step);
+    if (k >= 0 && k < N) rows[k][l.side] += l.usd;
+    if (Math.abs(l.price / D.price - 1) * 100 <= mWin) { if (l.side === "long") tl += l.usd; else ts += l.usd; }
+  }
+  const mx = Math.max(1, ...rows.map((r) => r.long + r.short)), bigI = rows.reduce((a, r, i) => (r.long + r.short > rows[a].long + rows[a].short ? i : a), 0);
+  const cur = rows.findIndex((r) => D.price >= r.price - step / 2 && D.price < r.price + step / 2);
+  const bigEnough = (r) => r.long + r.short >= 0.25 * mx;
+  let upI = -1, dnI = -1;
+  for (let k = cur + 1; k < N && cur >= 0; k++) if (bigEnough(rows[k])) { upI = k; break; }
+  for (let k = cur - 1; k >= 0; k--) if (bigEnough(rows[k])) { dnI = k; break; }
+  const tot = tl + ts || 1, pct = (r) => ((r.price / D.price - 1) * 100);
+  const line = (mark, r, col) => r ? `${mark} <b style="color:${col}">${fp(r.price)}</b> $${fmt(r.long + r.short)} ${pct(r) >= 0 ? "+" : ""}${pct(r).toFixed(1)}%` : `${mark} —`;
+  $("mhead").innerHTML = `<b>${D.coin} ${fp(D.price)}</b> · окно ±${mWin}%<br>`
+    + `<span style="color:#ff4d5e">Σ ЛОНГИ $${fmt(tl)} ${(tl / tot * 100).toFixed(0)}%</span> · <span style="color:#22e07a">Σ ШОРТЫ $${fmt(ts)} ${(ts / tot * 100).toFixed(0)}%</span>`
+    + `<br>аккаунтов в лонге ${(D.share * 100).toFixed(0)}% (Binance)<br>`
+    + line("▲ ближайшая", rows[upI], "#22e07a") + "<br>" + line("▼ ближайшая", rows[dnI], "#ff4d5e") + "<br>"
+    + line("★ крупнейшая", rows[bigI], "#ffd23f");
+  let html = "";
+  for (let k = N - 1; k >= 0; k--) {
+    const r = rows[k], all = r.long + r.short, up = r.price > D.price, w = Math.sqrt(all / mx) * 100;
+    const col = up ? "#22e07a" : "#ff4d5e", mark = k === bigI ? "★" : k === upI ? "▲" : k === dnI ? "▼" : "";
+    html += `<div class="mrow${k === cur ? " cur" : ""}"><span class="p">${mark}${fp(r.price)}</span>`
+      + `<span class="bar"><i style="width:${w.toFixed(1)}%;background:${k === bigI ? "#ffd23f" : col};opacity:${k === bigI ? 0.9 : 0.35 + 0.6 * all / mx}"></i></span>`
+      + `<span class="u" style="color:${col}">${all > 0 ? "$" + fmt(all) : ""}</span><span class="d">${pct(r) >= 0 ? "+" : ""}${pct(r).toFixed(1)}%</span></div>`;
+  }
+  $("mrows").innerHTML = html;
+}
+
+// ── 🔎 the screener both ways: the 40 most traded coins, the squeeze up and the mirror down ──
+let scanning = false;
+async function scan() {
+  if (scanning) return; scanning = true;
+  $("sst").textContent = "ищу монеты…"; $("slist").innerHTML = "";
+  try {
+    const coins = await HD.marketCoins(), got = [];
+    let n = 0;
+    await HD.scan(coins, (r) => { got.push(r); n++; $("sst").textContent = `считаю ${n} из ${coins.length}…`; renderScan(got); });
+    $("sst").textContent = `${got.length} монет · ${new Date().toLocaleTimeString("ru-RU")}`;
+  } catch (e) { $("sst").textContent = "нет связи с Binance"; }
+  scanning = false;
+}
+function renderScan(rows) {
+  rows = [...rows].sort((a, b) => Math.max(b.up, b.down) - Math.max(a.up, a.down));
+  $("slist").innerHTML = rows.map((r) => `<div class="card" data-c="${r.coin}"><div class="t">${r.coin}`
+    + `<span class="chip ${r.side || ""}">${r.verdict}</span><span style="margin-left:auto;font:12px ui-monospace,Menlo,monospace">`
+    + `<span style="color:#22e07a">↑${r.up}</span> <span style="color:#ff4d5e">↓${r.down}</span></span></div>`
+    + `<div class="n">фанд ${r.funding >= 0 ? "+" : ""}${r.funding.toFixed(4)}% · ОИ 4ч ${r.oi_chg >= 0 ? "+" : ""}${r.oi_chg.toFixed(1)}%`
+    + ` · CVD ${r.cvd_ratio >= 0 ? "+" : ""}${r.cvd_ratio.toFixed(2)} · цена ${r.price_chg >= 0 ? "+" : ""}${r.price_chg.toFixed(2)}%</div></div>`).join("");
+  document.querySelectorAll("#slist .card").forEach((c) => c.onclick = () => {
+    coin = c.dataset.c; $("coin").value = coin; try { localStorage.setItem("hdp_coin", coin); } catch (e) {}
+    document.querySelector('#tabs button[data-p="chart"]').click(); load(true);
+  });
+}
+$("sgo").onclick = scan;
+
+// ── a tap on the chart: the money and the distance at that price ──
+$("chart").addEventListener("click", (e) => {
+  if (!D) return;
+  const box = $("chart").getBoundingClientRect(), y = e.clientY - box.top, p = series.coordinateToPrice(y), tip = $("tip");
+  if (p == null) { tip.style.display = "none"; return; }
+  const step = D.price * 0.0015, r = HD.rows(D.levels, D.price, 0.15, 15).find((q) => Math.abs(q.price - p) <= step / 2);
+  const up = p > D.price, usd = r ? (up ? r.short : r.long) : 0;
+  tip.innerHTML = `<b>${fp(p)}</b> <span class="m">(${((p / D.price - 1) * 100).toFixed(2)}%)</span><br>`
+    + (usd > 0 ? `ликвидации ${up ? "шортов" : "лонгов"}: <b style="color:${up ? "#22e07a" : "#ff4d5e"}">$${fmt(usd)}</b>` : '<span class="m">ликвидаций нет</span>')
+    + `<br><span class="m">≈${Math.max(1, Math.round((Math.abs(p / D.price - 1) * 100 / (D.move || 1)) ** 2))} свечей 15m</span>`;
+  tip.style.display = "block";
+  tip.style.left = Math.max(4, Math.min(box.width - 240, e.clientX - box.left - 115)) + "px";
+  tip.style.top = Math.max(4, Math.min(box.height - 90, y + 14)) + "px";
+  clearTimeout(tip._t); tip._t = setTimeout(() => { tip.style.display = "none"; }, 4000);
+});
+
+async function load(full, keepView) {
+  if (busy) return; busy = true;
+  $("st").textContent = "обновляю…";
+  try {
+    if (full || !D) { D = await HD.load(coin, tf); setData(D, keepView); infoLine(D); if ($("p-map").style.display === "block") drawMap(); }
+    else {                                                   // the last candles only, between the full counts
+      const last = await HD.binanceKlines(coin, tf, 2);
+      for (const c of last) {
+        const i = D.candles.findIndex((x) => x[0] === c[0]), lastT = D.candles[D.candles.length - 1][0];
+        if (i >= 0) D.candles[i] = c; else if (c[0] > lastT) D.candles.push(c); else continue;
+        if (c[0] >= D.candles[D.candles.length - 1][0])        // the chart takes only its last bar or a new one
+          series.update({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] });
+      }
+      D.price = last[last.length - 1][4];
+    }
+    $("px").textContent = fp(D.price);
+    $("st").textContent = new Date().toLocaleTimeString("ru-RU");
+    draw();
+  } catch (e) { $("st").textContent = "нет связи: " + (e.message || e).toString().slice(0, 40); }
+  busy = false;
+}
+function setTf(t) {
+  tf = t; try { localStorage.setItem("hdp_tf", t); } catch (e) {}
+  document.querySelectorAll(".tf").forEach((b) => b.classList.toggle("on", b.dataset.tf === t)); load(true);
+}
+document.querySelectorAll(".tf").forEach((b) => b.onclick = () => setTf(b.dataset.tf));
+$("coin").addEventListener("change", () => {
+  coin = $("coin").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "BTC"; $("coin").value = coin;
+  try { localStorage.setItem("hdp_coin", coin); } catch (e) {} $("coin").blur(); load(true);
+});
+document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
+  const p = b.dataset.p;
+  $("chart").style.display = $("info").style.display = p === "chart" ? "" : "none";
+  $("p-map").style.display = p === "map" ? "block" : "none"; $("p-scr").style.display = p === "scr" ? "block" : "none";
+  if (p === "map") drawMap();
+  if (p === "chart") layout();
+});
+setTf(tf);
+setInterval(() => { if (!document.hidden) load(false); }, 10000);       // the last candles every 10 s
+setInterval(() => { if (!document.hidden) load(true, true); }, 60000);  // the whole count every minute
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(true, true); });
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
