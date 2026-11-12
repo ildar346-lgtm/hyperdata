@@ -306,4 +306,146 @@ HD.scan = async (coins, onRow, parallel = 4) => {   // 2 calls a coin, a few at 
   return out;
 };
 
+// ── 🌊 ВОЛНА (data_layer/waves: a zigzag on 5 m candles, the month's finished waves, the one running now) ──
+// a 5 m bar: [t (s), o, h, l, c, volume, taker buy volume, quote volume]
+HD.REV_K = 2.5; HD.MIN_REV = 0.8; HD.MIN_WAVES = 20; HD.TAIL_BARS = 3;
+const _k5 = {};
+HD.k5Month = async (coin) => {             // ~31 days of 5 m bars (6 pages of 1500), kept 10 min, the tail every call
+  const c = _k5[coin], now = Date.now();
+  const raw = (k) => [k[0] / 1000, +k[1], +k[2], +k[3], +k[4], +k[5], +k[9], +k[7]];
+  if (c && now - c.at < 600000) {
+    const tail = (await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${coin}USDT&interval=5m&limit=300`)).map(raw);
+    const keep = c.rows.filter((r) => r[0] < tail[0][0]);
+    c.rows = keep.concat(tail); return c.rows;
+  }
+  let rows = [], end = null;
+  for (let page = 0; page < 6; page++) {
+    const q = `symbol=${coin}USDT&interval=5m&limit=1500` + (end ? `&endTime=${end}` : "");
+    const got = (await getJSON(`https://fapi.binance.com/fapi/v1/klines?${q}`)).map(raw);
+    if (!got.length) break;
+    rows = got.concat(rows); end = got[0][0] * 1000 - 1;
+    if (got.length < 1500) break;
+  }
+  _k5[coin] = { rows, at: now }; return rows;
+};
+HD.barNet = (k) => (k[5] > 0 ? k[7] * (2 * k[6] / k[5] - 1) : 0);
+const median = (xs) => { const s = [...xs].sort((a, b) => a - b), m = s.length >> 1; return s.length ? (s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) : 0; };
+HD.reversalPct = (k5) => {
+  const closes = k5.filter((_, i) => i % 12 === 0).map((k) => k[4]).filter((c) => c > 0);
+  const moves = closes.slice(1).map((b, i) => Math.abs(b / closes[i] - 1) * 100);
+  return moves.length ? Math.max(HD.MIN_REV, HD.REV_K * median(moves)) : HD.MIN_REV;
+};
+HD.zigzag = (k5, rev) => {
+  if (!k5.length) return [[], 0, true];
+  const piv = []; let up = k5[Math.min(k5.length - 1, 12)][4] >= k5[0][4], ext = 0;
+  k5.forEach((k, i) => {
+    if (up) { if (k[2] >= k5[ext][2]) ext = i; else if (k[3] <= k5[ext][2] * (1 - rev / 100)) { piv.push([ext, true]); up = false; ext = i; } }
+    else { if (k[3] <= k5[ext][3]) ext = i; else if (k[2] >= k5[ext][3] * (1 + rev / 100)) { piv.push([ext, false]); up = true; ext = i; } }
+  });
+  return [piv, ext, up];
+};
+HD.tail = (k5, i, top) => {
+  const lo = Math.max(0, i - HD.TAIL_BARS), hi = Math.min(k5.length, i + HD.TAIL_BARS + 1), cl = k5.slice(lo, hi).map((k) => k[4]);
+  if (top) { const b = Math.max(...cl); return b > 0 ? (k5[i][2] / b - 1) * 100 : 0; }
+  const b = Math.min(...cl); return k5[i][3] > 0 ? (b / k5[i][3] - 1) * 100 : 0;
+};
+HD.waves = (k5, rev) => {
+  const [piv] = HD.zigzag(k5, rev), out = [];
+  for (let j = 1; j < piv.length; j++) {
+    const [a, aTop] = piv[j - 1], [b, bTop] = piv[j], up = bTop;
+    const p0 = aTop ? k5[a][2] : k5[a][3], p1 = bTop ? k5[b][2] : k5[b][3];
+    let net = 0; for (let i = a + 1; i <= b; i++) net += HD.barNet(k5[i]);
+    out.push({ up, t0: k5[a][0], p0, t1: k5[b][0] + 300, p1, net: net * (up ? 1 : -1), tail: HD.tail(k5, b, bTop),
+               move: Math.abs(p1 / p0 - 1) * 100, minutes: (k5[b][0] + 300 - k5[a][0]) / 60 });
+  }
+  return out;
+};
+HD.waveStats = (k5) => {
+  const rows = k5.filter((k) => k[4] > 0);
+  if (rows.length < 288 * 3) return null;
+  const rev = HD.reversalPct(rows), hours = [];
+  for (let i = 0; i + 11 < rows.length; i += 12) hours.push(rows.slice(i, i + 12).reduce((a, k) => a + k[7], 0));
+  const st = { rev, hourVol: median(hours), up: [], down: [] };
+  for (const w of HD.waves(rows, rev)) (w.up ? st.up : st.down).push(w);
+  const side = (up) => (up ? st.up : st.down), enough = (w) => w.length >= HD.MIN_WAVES;
+  st.usualNet = (up) => (enough(side(up)) ? median(side(up).map((w) => w.net)) : null);
+  st.usualMove = (up) => (enough(side(up)) ? median(side(up).map((w) => w.move)) : null);
+  st.usualMinutes = () => (enough(st.up.concat(st.down)) ? median(st.up.concat(st.down).map((w) => w.minutes)) : null);
+  st.tailRange = (up) => { const w = side(up).map((x) => x.tail).sort((a, b) => a - b); return enough(w) ? [w[w.length >> 2], w[(w.length * 3) >> 2]] : null; };
+  st.pReach = (up, nowPct, targetPct) => {
+    const m = side(up).map((x) => x.move); if (!enough(m)) return null;
+    const got = m.filter((x) => x >= nowPct).length, went = m.filter((x) => x >= targetPct).length;
+    return got >= 5 ? went / got : null;
+  };
+  return st;
+};
+HD.currentWave = (k5, rev, price) => {
+  const rows = k5.filter((k) => k[4] > 0), [piv, , up] = HD.zigzag(rows, rev);
+  if (!piv.length) return null;
+  const [i0, top] = piv[piv.length - 1], p0 = top ? rows[i0][2] : rows[i0][3], sign = up ? 1 : -1;
+  let net = 0; for (let i = i0 + 1; i < rows.length; i++) net += HD.barNet(rows[i]);
+  const net15 = rows.slice(-3).reduce((a, k) => a + HD.barNet(k), 0);
+  const px = price || rows[rows.length - 1][4];
+  return { up, t0: rows[i0][0], p0, price: px, net: net * sign, net15: net15 * sign, move: Math.abs(px / p0 - 1) * 100 };
+};
+
+// ── 📈 CVD: the taker net of Binance's 5 m bars over 5 m / 15 m / 1 h / 4 h ──
+HD.cvd = (k5) => [["5м", 1], ["15м", 3], ["1ч", 12], ["4ч", 48]].map(([name, n]) => {
+  const w = k5.slice(-n), q = w.reduce((a, k) => a + k[7], 0), net = w.reduce((a, k) => a + HD.barNet(k), 0);
+  return { name, net, buyPct: q ? (net / q + 1) / 2 * 100 : 50, quote: q };
+});
+
+// ── 💥 ПАМП / ДАМП: the hour's move by the coin's own month (70 % / 30 % reached, the 95 % band edge), and the
+// liquidations a move to each would take (shorts on a pump, longs on a dump) — as price_map.wipe, calibrated here on
+// the month of 5 m bars instead of the terminal's volatility model ──
+HD.hourMoves = (k5) => {
+  const up = [], dn = [];
+  for (let i = 0; i + 12 <= k5.length; i += 12) {
+    const w = k5.slice(i, i + 12), o = w[0][1]; if (!(o > 0)) continue;
+    up.push((Math.max(...w.map((k) => k[2])) / o - 1) * 100); dn.push((1 - Math.min(...w.map((k) => k[3])) / o) * 100);
+  }
+  const q = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : 0; };
+  return up.length < 48 ? null : { up: { 70: q(up, 0.3), 30: q(up, 0.7), 95: q(up, 0.975) }, down: { 70: q(dn, 0.3), 30: q(dn, 0.7), 95: q(dn, 0.975) } };
+};
+HD.pumpDump = (levels, price, hm) => {
+  if (!hm) return [];
+  const shorts = levels.filter((l) => l.side === "short" && l.price > price), longs = levels.filter((l) => l.side === "long" && l.price < price);
+  const ts = shorts.reduce((a, l) => a + l.usd, 0), tl = longs.reduce((a, l) => a + l.usd, 0), out = [];
+  for (const [side, pool, tot] of [["up", shorts, ts], ["down", longs, tl]]) {
+    for (const [chance, key] of [["70%", 70], ["30%", 30], ["2.5%", 95]]) {
+      const d = hm[side][key], target = side === "up" ? price * (1 + d / 100) : price * (1 - d / 100);
+      const usd = pool.filter((l) => (side === "up" ? l.price <= target : l.price >= target)).reduce((a, l) => a + l.usd, 0);
+      out.push({ side, chance, price: target, dist: side === "up" ? d : -d, usd, share: tot ? usd / tot : 0 });
+    }
+  }
+  return out;
+};
+
+// ── Сводка всех бирж: funding, open interest, accounts long, Gate's people, the basis ──
+HD.summary = async (coin) => {
+  const S = `${coin}USDT`, safe = (p) => p.catch(() => null);
+  const [bf, by, okf, oih, bls, byls, gate, spot, perp] = await Promise.all([
+    safe(getJSON(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${S}`)),
+    safe(getJSON(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${S}`)),
+    safe(getJSON(`https://www.okx.com/api/v5/public/funding-rate?instId=${coin}-USDT-SWAP`)),
+    safe(getJSON(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${S}&period=15m&limit=17`)),
+    safe(getJSON(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${S}&period=1h&limit=1`)),
+    safe(getJSON(`https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${S}&period=1h&limit=1`)),
+    safe(getJSON(`https://api.gateio.ws/api/v4/futures/usdt/contract_stats?contract=${coin}_USDT&interval=5m&limit=13`)),
+    safe(getJSON(`https://api.binance.com/api/v3/ticker/price?symbol=${S}`)),
+    safe(getJSON(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${S}`))]);
+  const t = by?.result?.list?.[0], oi = (oih || []).map((r) => +r.sumOpenInterestValue);
+  const g = Array.isArray(gate) && gate.length ? gate : null;
+  return {
+    funding: { Binance: bf ? +bf.lastFundingRate * 100 : null, Bybit: t ? +t.fundingRate * 100 : null,
+               OKX: okf?.data?.[0] ? +okf.data[0].fundingRate * 100 : null },
+    oi: oi.length ? oi[oi.length - 1] : null, oi1h: oi.length >= 5 ? (oi[oi.length - 1] / oi[oi.length - 5] - 1) * 100 : null,
+    oi4h: oi.length >= 17 ? (oi[oi.length - 1] / oi[0] - 1) * 100 : null,
+    longAcc: { Binance: bls?.[0] ? +bls[0].longAccount * 100 : null, Bybit: byls?.result?.list?.[0] ? +byls.result.list[0].buyRatio * 100 : null },
+    gate: g ? { long: +g[g.length - 1].long_users, short: +g[g.length - 1].short_users,
+                long1h: +g[0].long_users, short1h: +g[0].short_users } : null,
+    basis: spot && perp ? (+perp.price / +spot.price - 1) * 100 : null,
+  };
+};
+
 if (typeof module !== "undefined") module.exports = HD;

@@ -58,6 +58,11 @@
   .chip { font-size:11px; padding:2px 7px; border-radius:6px; background:#1c2230; color:var(--dim); font-weight:600; }
   .chip.long { background:rgba(34,224,122,.18); color:#22e07a; } .chip.short { background:rgba(255,77,94,.18); color:#ff4d5e; }
   .card .n { font:12px ui-monospace, Menlo, monospace; color:#cbd5e1; margin-top:4px; }
+  .xc { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin:10px 0; overflow:hidden; }
+  .xc h3 { margin:0; padding:7px 10px; font-size:13px; border-bottom:1px solid var(--line); }
+  .xc .b { padding:7px 10px; font:12px/1.55 ui-monospace, Menlo, monospace; color:#d7dae0; }
+  .xc table { border-collapse:collapse; width:100%; } .xc td { padding:2px 4px; text-align:right; } .xc td:first-child { text-align:left; }
+  .g { color:#22e07a; } .r { color:#ff4d5e; } .y { color:#ffd23f; }
 </style>
 </head>
 <body>
@@ -74,6 +79,7 @@
     <span class="m" id="mpan" style="align-self:center"></span></div>
   <div class="head" id="mhead">…</div><div id="mrows"></div>
   <p class="m">Оценка по Binance, Bybit, OKX (их открытый интерес и свечи 7 дней). Не совет.</p>
+  <div id="xcards"><p class="m">Сводка, CVD, памп/дамп и волна загружаются… (первый раз до 15 с)</p></div>
 </div>
 <div class="page" id="p-scr">
   <div class="ctl"><button id="sgo">🔎 обновить</button><span class="m" id="sst" style="align-self:center"></span></div>
@@ -233,6 +239,67 @@ function drawMap() {
   $("mrows").innerHTML = html;
 }
 
+// ── the panels under the map: Сводка, 📈 CVD, 💥 ПАМП / ДАМП, 🌊 ВОЛНА (counted on the phone, every minute) ──
+let xBusy = false, xAt = 0;
+const sg = (v, d = 2) => (v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(d));
+const cl = (v) => (v == null ? "" : v >= 0 ? "g" : "r");
+async function loadExtras(force) {
+  if (xBusy || !D || (!force && Date.now() - xAt < 55000)) return; xBusy = true;
+  try {
+    const [k5, sm] = await Promise.all([HD.k5Month(D.coin), HD.summary(D.coin)]);
+    const st = HD.waveStats(k5), cur = st ? HD.currentWave(k5.slice(-600), st.rev, D.price) : null;
+    const cv = HD.cvd(k5), hm = HD.hourMoves(k5), pd = HD.pumpDump(D.levels, D.price, hm);
+    let h = "";
+    // Сводка
+    const f = sm.funding, g = sm.gate;
+    h += `<div class="xc"><h3>Сводка всех бирж · ${D.coin}</h3><div class="b">`
+      + `фандинг: ` + Object.entries(f).map(([k, v]) => `${k} <span class="${cl(v == null ? null : -v)}">${v == null ? "—" : sg(v, 4) + "%"}</span>`).join(" · ")
+      + `<br>открытый интерес Binance $${sm.oi ? fmt(sm.oi) : "—"} · 1ч <span class="${cl(sm.oi1h)}">${sg(sm.oi1h)}%</span>`
+      + ` · 4ч <span class="${cl(sm.oi4h)}">${sg(sm.oi4h)}%</span>`
+      + `<br>аккаунтов в лонге: ` + Object.entries(sm.longAcc).map(([k, v]) => `${k} ${v == null ? "—" : v.toFixed(0) + "%"}`).join(" · ");
+    if (g) h += `<br>люди Gate: <span class="g">▲ ${g.long.toLocaleString("ru-RU")}</span> (${sg(g.long - g.long1h, 0)} за 1ч)`
+      + ` · <span class="r">▼ ${g.short.toLocaleString("ru-RU")}</span> (${sg(g.short - g.short1h, 0)})`;
+    h += `<br>базис (фьючерс к споту) ${sg(sm.basis, 3)}%`;
+    if (hm) h += `<br>час: 95% внутри ${fp(D.price * (1 - hm.down[95] / 100))} – ${fp(D.price * (1 + hm.up[95] / 100))}`
+      + ` (−${hm.down[95].toFixed(2)}% / +${hm.up[95].toFixed(2)}%)`;
+    h += `</div></div>`;
+    // CVD
+    h += `<div class="xc"><h3>📈 CVD · ${D.coin} · Binance, покупки − продажи по рынку</h3><div class="b"><table>`
+      + cv.map((r) => `<tr><td>${r.name}</td><td class="${cl(r.net)}">${r.net >= 0 ? "+" : "−"}$${fmt(Math.abs(r.net))}</td>`
+        + `<td>покупки ${r.buyPct.toFixed(0)}%</td><td class="m">оборот $${fmt(r.quote)}</td></tr>`).join("") + `</table></div></div>`;
+    // ПАМП / ДАМП
+    h += `<div class="xc"><h3>💥 ПАМП / ДАМП · сколько выбьет до цели за час</h3><div class="b">`;
+    if (!pd.length) h += `<span class="m">мало истории для расчёта</span>`;
+    else h += `<table><tr class="m"><td></td><td>цена</td><td>ход</td><td>шанс 1ч</td><td>выбьет</td><td>доля</td></tr>`
+      + pd.map((q) => `<tr><td class="${q.side === "up" ? "g" : "r"}">${q.side === "up" ? "▲ памп" : "▼ дамп"}</td>`
+        + `<td>${fp(q.price)}</td><td>${sg(q.dist)}%</td><td>${q.chance}</td>`
+        + `<td class="${q.side === "up" ? "g" : "r"}">$${fmt(q.usd)}</td><td>${(q.share * 100).toFixed(0)}%</td></tr>`).join("") + `</table>`
+      + `<span class="m">шанс — по движениям этой монеты за месяц; выбьет — ${"шорты на пампе, лонги на дампе"}</span>`;
+    h += `</div></div>`;
+    // ВОЛНА
+    h += `<div class="xc"><h3>🌊 ВОЛНА · ${D.coin} · волны за месяц (разворот от ${st ? st.rev.toFixed(2) : "—"}%)</h3><div class="b">`;
+    if (!st || !cur) h += `<span class="m">мало истории</span>`;
+    else {
+      const un = st.usualNet(cur.up), um = st.usualMove(cur.up), mins = st.usualMinutes(), tr = st.tailRange(cur.up);
+      const fuel = un ? cur.net / un : null, end = um ? cur.p0 * (1 + (cur.up ? 1 : -1) * um / 100) : null;
+      const left = um ? Math.max(0, um - cur.move) : null, pr = um ? st.pReach(cur.up, cur.move, um) : null;
+      const age = (Date.now() / 1000 - cur.t0) / 60;
+      h += `сейчас: <b class="${cur.up ? "g" : "r"}">${cur.up ? "РОСТ ↑" : "ПАДЕНИЕ ↓"}</b> ${cur.move.toFixed(2)}% от ${fp(cur.p0)}, ${age < 120 ? age.toFixed(0) + " мин" : (age / 60).toFixed(1) + " ч"}`
+        + `<br>топливо: ${cur.net >= 0 ? "+" : "−"}$${fmt(Math.abs(cur.net))} ${fuel != null ? `(${fuel.toFixed(1)}× обычного)` : ""}`
+        + ` · за 15м ${cur.net15 >= 0 ? "+" : "−"}$${fmt(Math.abs(cur.net15))} <span class="m">${cur.net15 >= 0 ? "подкармливают" : "иссякает"}</span>`
+        + `<br>обычно волна ${cur.up ? "вверх" : "вниз"}: ${um ? um.toFixed(2) + "%" : "—"} → до ${end ? fp(end) : "—"}`
+        + (left != null ? ` · осталось ~${left.toFixed(2)}%` : "")
+        + (pr != null ? ` · доходят ${(pr * 100).toFixed(0)}%` : "")
+        + `<br>хвост (прокол за экстремум): ${tr ? tr[0].toFixed(2) + "–" + tr[1].toFixed(2) + "%" : "—"}`
+        + ` · длина обычно ${mins ? (mins < 120 ? mins.toFixed(0) + " мин" : (mins / 60).toFixed(1) + " ч") : "—"}`
+        + `<br><span class="m">волн за месяц: ↑${st.up.length} ↓${st.down.length} · Binance 5м · не совет</span>`;
+    }
+    h += `</div></div>`;
+    $("xcards").innerHTML = h; xAt = Date.now();
+  } catch (e) { $("xcards").innerHTML = `<p class="m">нет связи: ${(e.message || e).toString().slice(0, 60)}</p>`; }
+  xBusy = false;
+}
+
 // ── 🔎 the screener both ways: the 40 most traded coins, the squeeze up and the mirror down ──
 let scanning = false;
 async function scan() {
@@ -303,7 +370,7 @@ function setTf(t) {
 }
 document.querySelectorAll(".tf").forEach((b) => b.onclick = () => setTf(b.dataset.tf));
 $("coin").addEventListener("change", () => {
-  coin = $("coin").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "BTC"; $("coin").value = coin;
+  coin = $("coin").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "BTC"; $("coin").value = coin; xAt = 0;
   try { localStorage.setItem("hdp_coin", coin); } catch (e) {} $("coin").blur(); load(true);
 });
 document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => {
@@ -311,12 +378,13 @@ document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => {
   const p = b.dataset.p;
   $("chart").style.display = $("info").style.display = p === "chart" ? "" : "none";
   $("p-map").style.display = p === "map" ? "block" : "none"; $("p-scr").style.display = p === "scr" ? "block" : "none";
-  if (p === "map") drawMap();
+  if (p === "map") { drawMap(); loadExtras(); }
   if (p === "chart") layout();
 });
 setTf(tf);
 setInterval(() => { if (!document.hidden) load(false); }, 10000);       // the last candles every 10 s
 setInterval(() => { if (!document.hidden) load(true, true); }, 60000);  // the whole count every minute
+setInterval(() => { if (!document.hidden && $("p-map").style.display === "block") loadExtras(); }, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(true, true); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
