@@ -424,7 +424,7 @@ async function load(full, keepView) {
       D.price = last[last.length - 1][4];
     }
     $("px").textContent = fp(D.price);
-    $("st").textContent = new Date().toLocaleTimeString("ru-RU");
+    $("st").textContent = new Date().toLocaleTimeString("ru-RU") + " · " + APP_VERSION;
     draw();
   } catch (e) { $("st").textContent = "нет связи: " + (e.message || e).toString().slice(0, 40); }
   busy = false;
@@ -499,7 +499,14 @@ setInterval(() => { if (!document.hidden) load(false); }, 10000);       // the l
 setInterval(() => { if (!document.hidden) load(true, true); }, 60000);  // the whole count every minute
 setInterval(() => { if (!document.hidden && $("p-map").style.display === "block") loadExtras(); }, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(true, true); stream(); } });
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+// the version on screen; a new version, once fetched, shows at once (the page reloads itself one time)
+const APP_VERSION = "v9";
+$("st").textContent = APP_VERSION;
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloaded) { reloaded = true; location.reload(); } });
+}
 </script>
 </body>
 </html>
