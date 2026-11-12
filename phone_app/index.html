@@ -114,13 +114,18 @@ const chart = LightweightCharts.createChart($("chart"), {
   layout: { background: { color: "#0b0e14" }, textColor: "#cbd5e1", fontSize: 11 },
   grid: { vertLines: { color: "#161b26" }, horzLines: { color: "#161b26" } },
   timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 10 },
-  rightPriceScale: { borderColor: "#232a38" }, crosshair: { mode: 0 } });
+  rightPriceScale: { borderColor: "#232a38" }, crosshair: { mode: 0 },
+  handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: true }, axisDoubleClickReset: true },
+  kineticScroll: { touch: true, mouse: false } });
 const series = chart.addCandlestickSeries({ upColor: "#22e07a", downColor: "#ff4d5e", borderVisible: false,
   wickUpColor: "#22e07a", wickDownColor: "#ff4d5e" });
 const vol = chart.addHistogramSeries({ priceScaleId: "v", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
 chart.priceScale("v").applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.05, bottom: 0.17 } });
-chart.timeScale().subscribeVisibleLogicalRangeChange(draw);
+let drawQueued = false;
+function drawSoon() { if (drawQueued) return; drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); }); }
+chart.timeScale().subscribeVisibleLogicalRangeChange(drawSoon);
 new ResizeObserver(layout).observe(document.body);
 
 function setData(d, keepView) {
@@ -141,25 +146,39 @@ function infoLine(d) {
 }
 
 // ── the layers on one canvas over the candles ──
+let stripes = null, stripesOf = null;
+function prepStripes() {          // once per data: each row's money, colour and the time of the last candle through it
+  const rows = HD.rows(D.levels, D.price, 0.15, 15), mx = Math.max(1, ...rows.map((r) => r.long + r.short));
+  const big = rows.reduce((a, r) => (!a || r.long + r.short > a.long + a.short ? r : a), null), cs = D.candles;
+  stripes = rows.map((r) => {
+    let t0 = null;
+    for (let i = cs.length - 1; i >= 0; i--) if (cs[i][3] <= r.price && cs[i][2] >= r.price) { t0 = cs[i][0]; break; }
+    const up = r.price > D.price;
+    return { price: r.price, t0, rgb: up ? "34,224,122" : "255,77,94",
+             al: (r === big ? 0.6 : 0.02 + 0.2 * Math.pow((r.long + r.short) / mx, 1.5)).toFixed(3) };
+  });
+  stripesOf = D;
+}
+let cvW = 0, cvH = 0;
 function draw() {
   const cv = $("zc"), box = $("chart"), dpr = window.devicePixelRatio || 1, w = box.clientWidth, h = box.clientHeight;
-  cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + "px"; cv.style.height = h + "px";
-  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  if (w !== cvW || h !== cvH) {                      // the canvas re-sized only when the chart is
+    cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + "px"; cv.style.height = h + "px"; cvW = w; cvH = h;
+  }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
   if (!D) return;
   const right = w - (chart.priceScale("right").width() || 55), Y = (p) => series.priceToCoordinate(p);
   const X = (t) => chart.timeScale().timeToCoordinate(t);
   // the liquidation money: stripes after the last candle through the price, dim, the biggest bright
-  const rows = HD.rows(D.levels, D.price, 0.15, 15), mx = Math.max(1, ...rows.map((r) => r.long + r.short));
-  const big = rows.reduce((a, r) => (!a || r.long + r.short > a.long + a.short ? r : a), null), cs = D.candles;
-  for (const r of rows) {
+  if (stripesOf !== D) prepStripes();
+  for (const r of stripes) {
     const y = Y(r.price); if (y == null || y < 0 || y > h) continue;
     let x0 = 0;
-    for (let i = cs.length - 1; i >= 0; i--) if (cs[i][3] <= r.price && cs[i][2] >= r.price) { const x = X(cs[i][0]); x0 = x == null ? 0 : x + 4; break; }
+    if (r.t0 != null) { const x = X(r.t0); x0 = x == null ? 0 : x + 4; }
     if (x0 >= right - 6) continue;
-    const up = r.price > D.price, rgb = up ? "34,224,122" : "255,77,94";
-    const al = r === big ? 0.6 : 0.02 + 0.2 * Math.pow((r.long + r.short) / mx, 1.5);
+    const rgb = r.rgb, al = r.al;
     const gr = g.createLinearGradient(0, y - 5, 0, y + 5);
-    gr.addColorStop(0, `rgba(${rgb},0)`); gr.addColorStop(0.5, `rgba(${rgb},${al.toFixed(3)})`); gr.addColorStop(1, `rgba(${rgb},0)`);
+    gr.addColorStop(0, `rgba(${rgb},0)`); gr.addColorStop(0.5, `rgba(${rgb},${al})`); gr.addColorStop(1, `rgba(${rgb},0)`);
     g.fillStyle = gr; g.fillRect(x0, y - 5, right - x0, 10);
   }
   // zones ×3+ and order blocks
