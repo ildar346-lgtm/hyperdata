@@ -1,7 +1,7 @@
 // The app's own files kept on the phone: it opens from this copy at once, with no server at all; when the address
 // answers (the install link is open), the copy is refreshed in the background for the next start. A closed link
 // answers with an error page (Cloudflare 530), never trusted over the copy. The exchanges' data is never cached.
-const CACHE = "hd-phone-v6";
+const CACHE = "hd-phone-v7";
 const FILES = ["./", "index.html", "hd.js", "manifest.json", "icon-180.png", "icon-512.png",
   "https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));

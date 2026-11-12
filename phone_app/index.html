@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -29,7 +29,7 @@
   .tf.on { background:#2563eb; border-color:#2563eb; }
   #info { position:fixed; left:0; right:0; z-index:4; padding:4px 8px; font-size:12px; line-height:1.35;
           background:rgba(11,14,20,.9); border-bottom:1px solid var(--line); }
-  #chart { position:fixed; left:0; right:0; }
+  #chart { position:fixed; left:0; right:0; touch-action:none; -webkit-touch-callout:none; }
   #zc { position:absolute; inset:0; pointer-events:none; z-index:3; }
   #tip { display:none; position:absolute; z-index:6; width:230px; pointer-events:none; padding:7px 9px; font-size:12px;
          line-height:1.4; background:rgba(18,22,32,.96); border:1px solid #2f3747; border-radius:9px; }
@@ -146,9 +146,21 @@ function infoLine(d) {
 }
 
 // ── the layers on one canvas over the candles ──
-let stripes = null, stripesOf = null;
+let stripes = null, stripesOf = null, smalls = [];
+const BIG_COINS = new Set(["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE"]);
 function prepStripes() {          // once per data: each row's money, colour and the time of the last candle through it
   const rows = HD.rows(D.levels, D.price, 0.15, 15), mx = Math.max(1, ...rows.map((r) => r.long + r.short));
+  // small participants (as on the Mac): single levels under $10 000 on the big coins, $1 000 on the others
+  const thr = BIG_COINS.has(D.coin) ? 10000 : 1000, step = D.price * 0.0015, lo0 = D.price * (1 - 0.15), small = new Map();
+  for (const l of D.levels) if (l.usd < thr && Math.abs(l.price / D.price - 1) <= 0.15) {
+    const k = Math.floor((l.price - lo0) / step), b = small.get(k) || { price: lo0 + (k + 0.5) * step, usd: 0, n: 0 };
+    b.usd += l.usd; b.n++; small.set(k, b);
+  }
+  smalls = [...small.values()];
+  // the phone has no single positions (the Mac takes them from Hyperliquid's wallets): when the estimate holds no small
+  // level, the small participants are the price rows holding under 5 % of the biggest row's money
+  if (!smalls.length) smalls = rows.filter((r) => r.long + r.short > 0 && r.long + r.short < 0.05 * mx)
+    .map((r) => ({ price: r.price, usd: r.long + r.short }));
   const big = rows.reduce((a, r) => (!a || r.long + r.short > a.long + a.short ? r : a), null), cs = D.candles;
   stripes = rows.map((r) => {
     let t0 = null;
@@ -209,6 +221,18 @@ function draw() {
       g.fillStyle = dash[0] === 2 ? "#f59e0b" : col; g.fillText(txt, right - 5, y);
     }
   }
+  // small participants: a dash right of the last candle, over its high / under its low
+  const lc = D.candles[D.candles.length - 1], lx = lc ? X(lc[0]) : null, smx = Math.max(1, ...smalls.map((q) => q.usd));
+  if (lx != null) for (const q of smalls) {
+    if (!(q.price > lc[2] || q.price < lc[3])) continue;
+    const y = Y(q.price); if (y == null || y < 0 || y > h) continue;
+    const x0 = lx + 8, len = 6 + 34 * Math.sqrt(q.usd / smx), rgb = q.price > D.price ? "34,224,122" : "255,77,94";
+    if (x0 + len > right - 2) continue;
+    g.strokeStyle = `rgb(${rgb})`; g.lineWidth = 2; g.beginPath(); g.moveTo(x0, Math.round(y) + 0.5); g.lineTo(x0 + len, Math.round(y) + 0.5); g.stroke();
+    g.fillStyle = `rgba(${rgb},.85)`; g.font = "9px -apple-system"; g.textAlign = "left"; g.textBaseline = "middle";
+    if (x0 + len + 34 < right) g.fillText("$" + fmt(q.usd), x0 + len + 3, y);
+  }
+  g.textAlign = "right";
   if (D.star) { const y = Y(D.star.price); if (y != null && y > 0 && y < h) { g.fillStyle = "#ffd23f"; g.font = "700 14px -apple-system";
     g.fillText("★", right - 4, y); } }
   g.textAlign = "left"; g.textBaseline = "bottom";
@@ -216,7 +240,7 @@ function draw() {
 
 // ── 🗺 the liquidation map (the panels' first map): rows of money around the price, ★ the biggest, ▲ ▼ the nearest big
 let mWin = 8, mPan = 0;
-const WINS = [2, 4, 8, 15];
+const WINS = [2, 4, 8, 15, 30, 50, 90];
 $("mwin").innerHTML = WINS.map((w) => `<button data-w="${w}">±${w}%</button>`).join("");
 document.querySelectorAll("#mwin button").forEach((b) => b.onclick = () => { mWin = +b.dataset.w; mPan = 0; drawMap(); });
 $("mup").onclick = () => { mPan += mWin / 4; drawMap(); };
@@ -241,17 +265,35 @@ function drawMap() {
   for (let k = cur + 1; k < N && cur >= 0; k++) if (bigEnough(rows[k])) { upI = k; break; }
   for (let k = cur - 1; k >= 0; k--) if (bigEnough(rows[k])) { dnI = k; break; }
   const tot = tl + ts || 1, pct = (r) => ((r.price / D.price - 1) * 100);
+  // ПЕРЕВЕС: shorts over the price against longs under it; on the heavier side, the 3 rows next to each other with the
+  // most money — the cluster the price is pulled to
+  const above = rows.filter((r, k) => k > cur).reduce((a, r) => a + r.short + r.long, 0);
+  const below = rows.filter((r, k) => cur >= 0 && k < cur).reduce((a, r) => a + r.short + r.long, 0);
+  const heavyUp = above >= below, ratio = Math.max(above, below) / Math.max(1, Math.min(above, below));
+  let clI = -1, clSum = 0;
+  for (let k = 0; k + 2 < N; k++) {
+    if (heavyUp ? k <= cur : k + 2 >= cur) continue;
+    const sm = rows[k].long + rows[k].short + rows[k + 1].long + rows[k + 1].short + rows[k + 2].long + rows[k + 2].short;
+    if (sm > clSum) { clSum = sm; clI = k; }
+  }
+  const inCl = (k) => clI >= 0 && k >= clI && k <= clI + 2;
   const line = (mark, r, col) => r ? `${mark} <b style="color:${col}">${fp(r.price)}</b> $${fmt(r.long + r.short)} ${pct(r) >= 0 ? "+" : ""}${pct(r).toFixed(1)}%` : `${mark} —`;
   $("mhead").innerHTML = `<b>${D.coin} ${fp(D.price)}</b> · окно ±${mWin}%<br>`
     + `<span style="color:#ff4d5e">Σ ЛОНГИ $${fmt(tl)} ${(tl / tot * 100).toFixed(0)}%</span> · <span style="color:#22e07a">Σ ШОРТЫ $${fmt(ts)} ${(ts / tot * 100).toFixed(0)}%</span>`
     + `<br>аккаунтов в лонге ${(D.share * 100).toFixed(0)}% (Binance)<br>`
     + line("▲ ближайшая", rows[upI], "#22e07a") + "<br>" + line("▼ ближайшая", rows[dnI], "#ff4d5e") + "<br>"
-    + line("★ крупнейшая", rows[bigI], "#ffd23f");
+    + line("★ крупнейшая", rows[bigI], "#ffd23f")
+    + `<br><b style="color:${heavyUp ? "#22e07a" : "#ff4d5e"}">ПЕРЕВЕС: ${heavyUp ? "шортов сверху" : "лонгов снизу"} больше ×${ratio.toFixed(1)}</b>`
+    + ` ($${fmt(heavyUp ? above : below)} против $${fmt(heavyUp ? below : above)})`
+    + (clI >= 0 ? `<br>◆ кластер перевеса <b style="color:#c084fc">${fp(rows[clI].price)} – ${fp(rows[clI + 2].price)}</b> $${fmt(clSum)}`
+      + ` ${pct(rows[clI + 1]) >= 0 ? "+" : ""}${pct(rows[clI + 1]).toFixed(1)}%` : "")
+    + `<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:6px">`
+    + `<i style="width:${(tl / tot * 100).toFixed(1)}%;background:#ff4d5e"></i><i style="flex:1;background:#22e07a"></i></div>`;
   let html = "";
   for (let k = N - 1; k >= 0; k--) {
     const r = rows[k], all = r.long + r.short, up = r.price > D.price, w = Math.sqrt(all / mx) * 100;
-    const col = up ? "#22e07a" : "#ff4d5e", mark = k === bigI ? "★" : k === upI ? "▲" : k === dnI ? "▼" : "";
-    html += `<div class="mrow${k === cur ? " cur" : ""}"><span class="p">${mark}${fp(r.price)}</span>`
+    const col = up ? "#22e07a" : "#ff4d5e", mark = k === bigI ? "★" : k === upI ? "▲" : k === dnI ? "▼" : inCl(k) ? "◆" : "";
+    html += `<div class="mrow${k === cur ? " cur" : ""}"${inCl(k) && k !== cur ? ' style="background:rgba(192,132,252,.12);border-radius:4px"' : ""}><span class="p">${mark}${fp(r.price)}</span>`
       + `<span class="bar"><i style="width:${w.toFixed(1)}%;background:${k === bigI ? "#ffd23f" : col};opacity:${k === bigI ? 0.9 : 0.35 + 0.6 * all / mx}"></i></span>`
       + `<span class="u" style="color:${col}">${all > 0 ? "$" + fmt(all) : ""}</span><span class="d">${pct(r) >= 0 ? "+" : ""}${pct(r).toFixed(1)}%</span></div>`;
   }
