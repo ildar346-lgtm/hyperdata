@@ -31,6 +31,9 @@
           background:rgba(11,14,20,.9); border-bottom:1px solid var(--line); }
   #chart { position:fixed; left:0; right:0; touch-action:none; -webkit-touch-callout:none; }
   #zc { position:absolute; inset:0; pointer-events:none; z-index:3; }
+  #pz { position:absolute; top:0; right:0; bottom:28px; width:60px; z-index:4; touch-action:none; }
+  #pzr { display:none; position:absolute; right:64px; top:6px; z-index:5; background:rgba(28,34,48,.9); color:#cbd5e1;
+         border:1px solid #2f3747; border-radius:8px; padding:4px 9px; font:12px -apple-system, sans-serif; }
   #tip { display:none; position:absolute; z-index:6; width:230px; pointer-events:none; padding:7px 9px; font-size:12px;
          line-height:1.4; background:rgba(18,22,32,.96); border:1px solid #2f3747; border-radius:9px; }
   #tabs { position:fixed; left:0; right:0; bottom:0; z-index:5; display:flex; background:var(--panel);
@@ -72,7 +75,8 @@
   <div id="tfs"></div>
 </div>
 <div id="info"></div>
-<div id="chart"><canvas id="zc"></canvas><div id="tip"></div></div>
+<div id="chart"><canvas id="zc"></canvas><div id="tip"></div><div id="pz"></div>
+  <button id="pzr" title="масштаб цены — авто">авто</button></div>
 <div class="page" id="p-map">
   <div class="ctl" id="mwin"></div>
   <div class="ctl"><button id="mup">▲</button><button id="mdn">▼</button><button id="mzero">⊙ к цене</button>
@@ -408,7 +412,7 @@ async function load(full, keepView) {
   if (busy) return; busy = true;
   $("st").textContent = "обновляю…";
   try {
-    if (full || !D) { D = await HD.load(coin, tf); setData(D, keepView); infoLine(D); if ($("p-map").style.display === "block") drawMap(); }
+    if (full || !D) { D = await HD.load(coin, tf); setData(D, keepView); infoLine(D); if ($("p-map").style.display === "block") drawMap(); stream(); }
     else {                                                   // the last candles only, between the full counts
       const last = await HD.binanceKlines(coin, tf, 2);
       for (const c of last) {
@@ -425,6 +429,54 @@ async function load(full, keepView) {
   } catch (e) { $("st").textContent = "нет связи: " + (e.message || e).toString().slice(0, 40); }
   busy = false;
 }
+// ── the live candle (the user): Binance's kline stream (the /market endpoint, as the terminal), every trade ──
+let ws = null, wsKey = "";
+function stream() {
+  const key = coin + "@" + tf;
+  if (ws && wsKey === key && ws.readyState <= 1) return;
+  if (ws) { ws.onclose = null; try { ws.close(); } catch (e) {} }
+  wsKey = key;
+  const sock = ws = new WebSocket(`wss://fstream.binance.com/market/ws/${coin.toLowerCase()}usdt@kline_${tf}`);
+  sock.onmessage = (e) => {
+    let k; try { k = JSON.parse(e.data).k; } catch (err) { return; }
+    if (!k || !D || D.coin !== coin || D.tf !== tf) return;
+    const c = [k.t / 1000, +k.o, +k.h, +k.l, +k.c, +k.v, +k.q], last = D.candles[D.candles.length - 1];
+    if (c[0] < last[0]) return;
+    if (c[0] === last[0]) D.candles[D.candles.length - 1] = c; else D.candles.push(c);
+    series.update({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] });
+    vol.update({ time: c[0], value: c[5], color: c[4] >= c[1] ? "rgba(34,224,122,.35)" : "rgba(255,77,94,.35)" });
+    D.price = c[4]; $("px").textContent = fp(c[4]); drawSoon();
+  };
+  sock.onclose = () => { if (ws === sock) setTimeout(() => { if (ws === sock && !document.hidden) { ws = null; stream(); } }, 3000); };
+}
+
+// ── the price scale by finger (the user): drag the right scale up / down to zoom the prices, two taps — back to auto ──
+let pZoom = 1;
+function applyZoom() {
+  series.applyOptions({ autoscaleInfoProvider: (orig) => {
+    const r = orig(); if (!r || !r.priceRange || pZoom === 1) return r;
+    const { minValue: a, maxValue: b } = r.priceRange, mid = (a + b) / 2, half = (b - a) / 2 * pZoom;
+    return { priceRange: { minValue: mid - half, maxValue: mid + half }, margins: r.margins };
+  } });
+  $("pzr").style.display = pZoom === 1 ? "none" : "block";
+}
+(() => {
+  const pz = $("pz"); let y0 = null, z0 = 1, lastTap = 0;
+  pz.addEventListener("touchstart", (e) => {
+    if (e.touches.length !== 1) return;
+    e.preventDefault(); y0 = e.touches[0].clientY; z0 = pZoom;
+    const now = Date.now(); if (now - lastTap < 300) { pZoom = 1; applyZoom(); } lastTap = now;
+  }, { passive: false });
+  pz.addEventListener("touchmove", (e) => {
+    if (y0 === null || e.touches.length !== 1) return;
+    e.preventDefault();
+    pZoom = Math.min(20, Math.max(0.05, z0 * Math.exp((e.touches[0].clientY - y0) * 0.006)));   // down: wider, up: closer
+    applyZoom();
+  }, { passive: false });
+  pz.addEventListener("touchend", () => { y0 = null; });
+  $("pzr").onclick = () => { pZoom = 1; applyZoom(); };
+})();
+
 function setTf(t) {
   tf = t; try { localStorage.setItem("hdp_tf", t); } catch (e) {}
   document.querySelectorAll(".tf").forEach((b) => b.classList.toggle("on", b.dataset.tf === t)); load(true);
@@ -446,7 +498,7 @@ setTf(tf);
 setInterval(() => { if (!document.hidden) load(false); }, 10000);       // the last candles every 10 s
 setInterval(() => { if (!document.hidden) load(true, true); }, 60000);  // the whole count every minute
 setInterval(() => { if (!document.hidden && $("p-map").style.display === "block") loadExtras(); }, 60000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) load(true, true); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(true, true); stream(); } });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
