@@ -256,10 +256,10 @@ function drawMap() {
   if (!D) return;
   const N = 32, center = D.price * (1 + mPan / 100), lo = center * (1 - mWin / 100), step = center * 2 * mWin / 100 / N;
   const rows = Array.from({ length: N }, (_, k) => ({ price: lo + (k + 0.5) * step, long: 0, short: 0 }));
-  let tl = 0, ts = 0;
+  let tl = 0, ts = 0, above = 0, below = 0;
   for (const l of D.levels) {
     const k = Math.floor((l.price - lo) / step);
-    if (k >= 0 && k < N) rows[k][l.side] += l.usd;
+    if (k >= 0 && k < N) { rows[k][l.side] += l.usd; if (l.price > D.price) above += l.usd; else below += l.usd; }
     if (Math.abs(l.price / D.price - 1) * 100 <= mWin) { if (l.side === "long") tl += l.usd; else ts += l.usd; }
   }
   const mx = Math.max(1, ...rows.map((r) => r.long + r.short)), bigI = rows.reduce((a, r, i) => (r.long + r.short > rows[a].long + rows[a].short ? i : a), 0);
@@ -271,8 +271,6 @@ function drawMap() {
   const tot = tl + ts || 1, pct = (r) => ((r.price / D.price - 1) * 100);
   // ПЕРЕВЕС: shorts over the price against longs under it; on the heavier side, the 3 rows next to each other with the
   // most money — the cluster the price is pulled to
-  const above = rows.filter((r, k) => k > cur).reduce((a, r) => a + r.short + r.long, 0);
-  const below = rows.filter((r, k) => cur >= 0 && k < cur).reduce((a, r) => a + r.short + r.long, 0);
   const heavyUp = above >= below, ratio = Math.max(above, below) / Math.max(1, Math.min(above, below));
   let clI = -1, clSum = 0;
   for (let k = 0; k + 2 < N; k++) {
@@ -305,11 +303,11 @@ function drawMap() {
 }
 
 // ── the panels under the map: Сводка, 📈 CVD, 💥 ПАМП / ДАМП, 🌊 ВОЛНА (counted on the phone, every minute) ──
-let xBusy = false, xAt = 0;
+let xBusy = false, xAt = 0, xCoin = "";
 const sg = (v, d = 2) => (v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(d));
 const cl = (v) => (v == null ? "" : v >= 0 ? "g" : "r");
 async function loadExtras(force) {
-  if (xBusy || !D || (!force && Date.now() - xAt < 55000)) return; xBusy = true;
+  if (xBusy || !D || (!force && Date.now() - xAt < 55000 && xCoin === D.coin)) return; xBusy = true;
   try {
     const [k5, sm] = await Promise.all([HD.k5Month(D.coin), HD.summary(D.coin)]);
     const st = HD.waveStats(k5), cur = st ? HD.currentWave(k5.slice(-600), st.rev, D.price) : null;
@@ -360,7 +358,7 @@ async function loadExtras(force) {
         + `<br><span class="m">волн за месяц: ↑${st.up.length} ↓${st.down.length} · Binance 5м · не совет</span>`;
     }
     h += `</div></div>`;
-    $("xcards").innerHTML = h; xAt = Date.now();
+    $("xcards").innerHTML = h; xAt = Date.now(); xCoin = D.coin;
   } catch (e) { $("xcards").innerHTML = `<p class="m">нет связи: ${(e.message || e).toString().slice(0, 60)}</p>`; }
   xBusy = false;
 }
@@ -408,11 +406,16 @@ $("chart").addEventListener("click", (e) => {
   clearTimeout(tip._t); tip._t = setTimeout(() => { tip.style.display = "none"; }, 4000);
 });
 
+let again = null;
 async function load(full, keepView) {
-  if (busy) return; busy = true;
+  if (busy) { again = again && again[0] && !full ? again : [full, keepView]; return; } busy = true;
   $("st").textContent = "обновляю…";
   try {
-    if (full || !D) { D = await HD.load(coin, tf); setData(D, keepView); infoLine(D); if ($("p-map").style.display === "block") drawMap(); stream(); }
+    if (full || !D) {
+      D = await HD.load(coin, tf); setData(D, keepView); infoLine(D); $("coin").value = coin;
+      try { localStorage.setItem("hdp_coin", coin); } catch (e) {}
+      if ($("p-map").style.display === "block") { drawMap(); loadExtras(); } stream();
+    }
     else {                                                   // the last candles only, between the full counts
       const last = await HD.binanceKlines(coin, tf, 2);
       for (const c of last) {
@@ -426,8 +429,17 @@ async function load(full, keepView) {
     $("px").textContent = fp(D.price);
     $("st").textContent = new Date().toLocaleTimeString("ru-RU") + " · " + APP_VERSION;
     draw();
-  } catch (e) { $("st").textContent = "нет связи: " + (e.message || e).toString().slice(0, 40); }
+  } catch (e) {
+    const msg = (e.message || e).toString();
+    if (full && / 400/.test(msg) && (!D || D.coin !== coin)) {          // Binance has no such coin
+      if (!coin.startsWith("1000")) { coin = "1000" + coin; busy = false; return load(true, keepView); }
+      const bad = coin.replace(/^1000/, "");
+      coin = D ? D.coin : "BTC"; $("coin").value = coin; try { localStorage.setItem("hdp_coin", coin); } catch (er) {}
+      $("st").textContent = `нет монеты ${bad} на Binance`;
+    } else $("st").textContent = "нет связи: " + msg.slice(0, 40);
+  }
   busy = false;
+  if (again) { const a = again; again = null; return load(a[0], a[1]); }
 }
 // ── the live candle (the user): Binance's kline stream (the /market endpoint, as the terminal), every trade ──
 let ws = null, wsKey = "";
@@ -500,7 +512,7 @@ setInterval(() => { if (!document.hidden) load(true, true); }, 60000);  // the w
 setInterval(() => { if (!document.hidden && $("p-map").style.display === "block") loadExtras(); }, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(true, true); stream(); } });
 // the version on screen; a new version, once fetched, shows at once (the page reloads itself one time)
-const APP_VERSION = "v9";
+const APP_VERSION = "v10";
 $("st").textContent = APP_VERSION;
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((r) => r.update()).catch(() => {});
